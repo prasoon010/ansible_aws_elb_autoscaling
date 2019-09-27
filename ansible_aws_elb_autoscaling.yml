@@ -1,0 +1,344 @@
+---
+- name: "Playbook to create AWS autoscaling with ELB infra"
+  hosts: localhost
+  connection: local
+  vars:
+    key_name: devops
+    region: "us-east-2"
+    vpc_name: "my_vpc"
+    vpc_cidr_block: 172.16.0.0/16
+    public_subnet_1_cidr: 172.16.0.0/20
+    public_subnet_2_cidr: 172.16.16.0/20
+    private_subnet_1_cidr: 172.16.32.0/20
+    private_subnet_2_cidr: 172.16.48.0/20
+    image: ami-05c1fa8df71875112
+    instance_type: t2.micro
+
+  tasks:
+
+    - name: "Create new EC2 key"
+      ec2_key:
+        name: "{{ key_name }}"
+        region: "{{ region }}"
+      register: ec2_key_result
+
+    - name: "Save private key"
+      when: ec2_key_result.changed == true
+      copy:
+        content: "{{ ec2_key_result.key.private_key }}"
+        dest: "./{{ key_name }}.pem"
+        mode: 0600
+
+    - name: "Creating VPC"
+      ec2_vpc_net:
+        name: "{{ vpc_name }}"
+        cidr_block: "{{ vpc_cidr_block }}"
+        region: "{{ region }}"
+        state: present
+      register: vpc_result
+
+    - wait_for:
+        timeout: 10
+
+    - name: "Set vpc id in variable"
+      set_fact:
+        vpc_id: "{{ vpc_result.vpc.id }}"
+
+
+    - name: "Creating public subnet in [AZ-1]"
+      ec2_vpc_subnet:
+        state: present
+        vpc_id: "{{ vpc_id }}"
+        cidr: "{{ public_subnet_1_cidr }}"
+        az: "{{ region }}a"
+        region: "{{ region }}"
+        wait: yes
+        resource_tags:
+           Name: "public_subnet_1"
+      register: public_subnet_az1
+
+    - name: "Set public subnet id in variable [AZ-1]"
+      set_fact:
+        public_subnet_az1_id: "{{ public_subnet_az1.subnet.id }}"
+
+    - name: "Creating public subnet in[AZ-2]"
+      ec2_vpc_subnet:
+        state: present
+        vpc_id: "{{ vpc_id }}"
+        cidr: "{{ public_subnet_2_cidr }}"
+        az: "{{ region }}b"
+        region: "{{ region }}"
+        wait: yes
+        resource_tags:
+           Name: "public_subnet_2"
+      register: public_subnet_az2
+
+    - name: "Set public subnet id in variable [AZ-2]"
+      set_fact:
+        public_subnet_az2_id: "{{ public_subnet_az2.subnet.id }}"
+
+
+    - name: "Creating private subnet for webserver in [AZ-1]"
+      ec2_vpc_subnet:
+        state: present
+        vpc_id: "{{ vpc_id }}"
+        cidr: "{{ private_subnet_1_cidr }}"
+        az: "{{ region }}a"
+        region: "{{ region }}"
+        wait: yes
+        resource_tags:
+           Name: "private_subnet_1"
+      register: private_subnet_az1
+
+    - name: "Set private subnet id in variable [AZ-1]"
+      set_fact:
+        private_subnet_az1_id: "{{ private_subnet_az1.subnet.id }}"
+
+
+    - name: "Creating private subnet for webservers in [AZ-2]"
+      ec2_vpc_subnet:
+        state: present
+        vpc_id: "{{ vpc_id }}"
+        cidr: "{{ private_subnet_2_cidr }}"
+        az: "{{ region }}b"
+        region: "{{ region }}"
+        wait: yes
+        resource_tags:
+           Name: "private_subnet_2"
+      register: private_subnet_az2
+
+    - name: "Set private subnet id in variable [AZ-2]"
+      set_fact:
+        private_subnet_az2_id: "{{ private_subnet_az2.subnet.id }}"
+
+
+    - name: "Creating security group for ELB"
+      ec2_group:
+        name: "elb_sg"
+        description: "elb_sg"
+        state: present
+        vpc_id: "{{ vpc_id }}"
+        region: "{{ region }}"
+        rules:
+          - proto: tcp
+            ports:
+              - 22
+              - 80
+              - 443
+            cidr_ip: 0.0.0.0/0
+        rules_egress:
+          - proto: all
+            cidr_ip: 0.0.0.0/0
+      register: elb_sg
+
+    - name: "Set ELB security group id in variable"
+      set_fact:
+        elb_sg_id: "{{ elb_sg.group_id }}"
+
+
+    - name: "Creating security group for webservers"
+      ec2_group:
+        name: "webserver_sg"
+        description: "webserver_sg"
+        state: present
+        vpc_id: "{{ vpc_id }}"
+        region: "{{ region }}"
+        rules:
+          - proto: tcp
+            ports:
+              - 22
+              - 80
+              - 443
+            cidr_ip: 0.0.0.0/0
+        rules_egress:
+          - proto: all
+            cidr_ip: 0.0.0.0/0
+      register: webserver_sg
+
+    - name: "Set backend security group id in variable"
+      set_fact:
+        webserver_sg_id: "{{ webserver_sg.group_id }}"
+
+
+    - name: "Creating Internet gateway"
+      ec2_vpc_igw:
+        vpc_id: "{{ vpc_id }}"
+        region: "{{ region }}"
+        state: present
+        tags:
+          Name: MY_IGW
+      register: igw_result
+
+    - name: "Set Internet gateway id in variable"
+      set_fact:
+        igw_id: "{{ igw_result.gateway_id }}"
+
+    - name: "Creating NAT gateway"
+      ec2_vpc_nat_gateway:
+        state: present
+        subnet_id: "{{ public_subnet_az1_id }}"
+        wait: yes
+        region: "{{ region }}"
+        if_exist_do_not_create: true
+      register: nat_gw_result
+
+    - name: "Set NAT gateway id in variable"
+      set_fact:
+        nat_gw_id: "{{ nat_gw_result.nat_gateway_id }}"
+
+
+    - name: "Creating public subnet RT with igw"
+      ec2_vpc_route_table:
+        vpc_id: "{{ vpc_id }}"
+        region: "{{ region }}"
+        tags:
+          Name: public_RT
+        subnets:
+          - "{{ public_subnet_az1_id }}"
+          - "{{ public_subnet_az2_id }}"
+        routes:
+          - dest: 0.0.0.0/0
+            gateway_id: "{{ igw_id }}"
+      register: public_rt_result
+
+    - name: "Creating private subnet RT with NAT"
+      ec2_vpc_route_table:
+        vpc_id: "{{ vpc_id }}"
+        region: "{{ region }}"
+        tags:
+          Name: private_RT
+        subnets:
+          - "{{ private_subnet_az1_id }}"
+          - "{{ private_subnet_az2_id }}"
+        routes:
+          - dest: 0.0.0.0/0
+            gateway_id: "{{ nat_gw_id }}"
+      register: private_rt_result
+
+
+    - name: "Creating classic ELB"
+      ec2_elb_lb:
+        state: present
+        name: "myELB"
+        region: "{{ region }}"
+        subnets:
+          - "{{ public_subnet_az1_id }}"
+          - "{{ public_subnet_az2_id }}"
+        cross_az_load_balancing: "yes"
+        connection_draining_timeout: 60
+        listeners:
+          - protocol: http
+            load_balancer_port: 80
+            instance_port: 80
+        security_group_names: elb_sg
+        health_check:
+          ping_protocol: tcp
+          ping_port: 80
+          response_timeout: 5
+          interval: 20
+          unhealthy_threshold: 2
+          healthy_threshold: 5
+        tags:
+          Name: myELB
+      register: elb_result
+
+    - name: "ELB public DNS name"
+      debug:
+        msg: "ELB DNS name: {{ elb_result.elb.dns_name }}"
+
+
+    - name: "Creating Launch configuration"
+      ec2_lc:
+        state: present
+        name: myLC
+        region: "{{ region }}"
+        image_id: "{{ image }}"
+        key_name: "{{ key_name }}"
+        security_groups: webserver_sg
+        instance_type: "{{ instance_type }}"
+        assign_public_ip: no
+        volumes:
+          - device_name: /dev/xvda
+            volume_type: gp2
+            volume_size: 8
+        user_data: "{{ lookup('file', 'webserver_userdata') }}"
+
+
+    - name: "Creating Autoscaling group"
+      ec2_asg:
+        name: myASG
+        launch_config_name: myLC
+        load_balancers: myELB
+        region: "{{ region }}"
+        vpc_zone_identifier:
+          - "{{ private_subnet_az1_id }}"
+          - "{{ private_subnet_az2_id }}"
+        min_size: 2
+        max_size: 4
+        desired_capacity: 3
+        health_check_type: EC2
+        health_check_period: 300
+
+    - name: "Creating Autoscaling policy"
+      ec2_scaling_policy:
+        name: "{{ item.name }}"
+        asg_name: myASG
+        state: present
+        region: "{{ region }}"
+        adjustment_type: "{{ item.adjustment_type }}"
+        scaling_adjustment: "{{ item.scaling_adjustment }}"
+        min_adjustment_step: "{{ item.min_adjustment_step }}"
+        cooldown: "{{ item.cooldown }}"
+      with_items:
+        - name: "scaleup policy"
+          adjustment_type: "ChangeInCapacity"
+          scaling_adjustment: +1
+          min_adjustment_step: 1
+          cooldown: 180
+        - name: "scaledown policy"
+          adjustment_type: "ChangeInCapacity"
+          scaling_adjustment: -1
+          min_adjustment_step: 1
+          cooldown: 300
+      register: sp_result
+
+    - debug:
+        var: sp_result
+
+    - name: "Setting alarm variables"
+      set_fact:
+        metric_alarms:
+          - name: "{{ asg_name }}-ScaleUp"
+            comparison: ">="
+            threshold: 50.0
+            alarm_actions:
+              - "{{ sp_result.results[0].arn }}"
+
+          - name: "{{ asg_name }}-ScaleDown"
+            comparison: "<="
+            threshold: 20.0
+            alarm_actions:
+              - "{{ sp_result.results[1].arn }}"
+
+
+    - name: "Linking metric alarm to scaling policy"
+      ec2_metric_alarm:
+        region: "{{ region }}"
+        name: "{{ item.name }}"
+        state: present
+        metric: "CPUUtilization"
+        namespace: "AWS/EC2"
+        statistic: "Average"
+        comparison: "{{ item.comparison }}"
+        threshold: "{{ item.threshold }}"
+        period: 60
+        evaluation_periods: 5
+        unit: "Percent"
+        dimensions:
+          AutoScalingGroupName: "{{ asg_name }}"
+          alarm_actions: "{{ item.alarm_actions }}"
+      with_items: metric_alarms
+      when: max_size > 1
+      register: ma_result
+
+
