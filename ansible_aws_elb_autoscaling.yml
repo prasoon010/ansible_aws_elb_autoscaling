@@ -282,7 +282,7 @@
     - name: "Creating Autoscaling policy"
       ec2_scaling_policy:
         name: "{{ item.name }}"
-        asg_name: myASG
+        asg_name: "myASG"
         state: present
         region: "{{ region }}"
         adjustment_type: "{{ item.adjustment_type }}"
@@ -308,13 +308,13 @@
     - name: "Setting alarm variables"
       set_fact:
         metric_alarms:
-          - name: "{{ asg_name }}-ScaleUp"
+          - name: "myASG-ScaleUp"
             comparison: ">="
             threshold: 50.0
             alarm_actions:
               - "{{ sp_result.results[0].arn }}"
 
-          - name: "{{ asg_name }}-ScaleDown"
+          - name: "myASG-ScaleDown"
             comparison: "<="
             threshold: 20.0
             alarm_actions:
@@ -323,9 +323,9 @@
 
     - name: "Linking metric alarm to scaling policy"
       ec2_metric_alarm:
+        state: present
         region: "{{ region }}"
         name: "{{ item.name }}"
-        state: present
         metric: "CPUUtilization"
         namespace: "AWS/EC2"
         statistic: "Average"
@@ -335,10 +335,9 @@
         evaluation_periods: 5
         unit: "Percent"
         dimensions:
-          AutoScalingGroupName: "{{ asg_name }}"
-          alarm_actions: "{{ item.alarm_actions }}"
+          AutoScalingGroupName: myASG
+        alarm_actions: "{{ item.alarm_actions }}"
       with_items: metric_alarms
-      when: max_size > 1
       register: ma_result
 
 
