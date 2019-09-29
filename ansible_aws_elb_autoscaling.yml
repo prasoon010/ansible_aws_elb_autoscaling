@@ -242,10 +242,6 @@
           Name: myELB
       register: elb_result
 
-    - name: "ELB public DNS name"
-      debug:
-        msg: "ELB DNS name: {{ elb_result.elb.dns_name }}"
-
 
     - name: "Creating Launch configuration"
       ec2_lc:
@@ -257,10 +253,6 @@
         security_groups: webserver_sg
         instance_type: "{{ instance_type }}"
         assign_public_ip: no
-        volumes:
-          - device_name: /dev/xvda
-            volume_type: gp2
-            volume_size: 8
         user_data: "{{ lookup('file', 'webserver_userdata') }}"
 
 
@@ -302,24 +294,6 @@
           cooldown: 300
       register: sp_result
 
-    - debug:
-        var: sp_result
-
-    - name: "Setting alarm variables"
-      set_fact:
-        metric_alarms:
-          - name: "myASG-ScaleUp"
-            comparison: ">="
-            threshold: 50.0
-            alarm_actions:
-              - "{{ sp_result.results[0].arn }}"
-
-          - name: "myASG-ScaleDown"
-            comparison: "<="
-            threshold: 20.0
-            alarm_actions:
-              - "{{ sp_result.results[1].arn }}"
-
 
     - name: "Linking metric alarm to scaling policy"
       ec2_metric_alarm:
@@ -337,7 +311,21 @@
         dimensions:
           AutoScalingGroupName: myASG
         alarm_actions: "{{ item.alarm_actions }}"
-      with_items: metric_alarms
+      with_items:
+        - name: myASG-ScaleUp
+          comparison: ">="
+          threshold: 50.0
+          alarm_actions:
+            - "{{ sp_result.results[0].arn }}"
+
+        - name: myASG-ScaleDown
+          comparison: "<="
+          threshold: 20.0
+          alarm_actions:
+            - "{{ sp_result.results[1].arn }}"
       register: ma_result
 
 
+    - name: "ELB public DNS name"
+      debug:
+        msg: "ELB DNS name: {{ elb_result.elb.dns_name }}"
